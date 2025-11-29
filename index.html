@@ -101,6 +101,9 @@
       comboTimer: 0,
       superModeActive: false,
       superModeTimer: 0,
+      superReady: false,
+      superFireTimer: 0,
+      superShotsRemaining: 0,
       lockPulse: 0,
       lockingAnchor: null,
       homingChainCount: 0,
@@ -138,6 +141,12 @@
       hitBase: 3,
       maxPower: 160,
       superDuration: 8
+    };
+    const superSettings = {
+      worldTimeScale: 0.32,
+      autoFireInterval: 0.18,
+      autoLockMax: 12,
+      autoShotLimit: 15
     };
     const homingWeaponSettings = {
       maxChain: 5,
@@ -337,6 +346,9 @@
   state.comboTimer = 0;
   state.superModeActive = false;
   state.superModeTimer = 0;
+  state.superReady = false;
+  state.superFireTimer = 0;
+  state.superShotsRemaining = 0;
   state.homingChainCount = 0;
   state.homingChainTimer = 0;
   state.homingOverheat = 0;
@@ -631,6 +643,8 @@
     state.comboTimer = 0;
     state.superModeActive = false;
     state.superModeTimer = 0;
+    state.superReady = false;
+    state.superFireTimer = 0;
     state.homingChainCount = 0;
     state.homingChainTimer = 0;
     state.homingOverheat = 0;
@@ -1036,9 +1050,13 @@
     fireTwinBeams();
     a[" "] = false;
   }
-  if (a["enter"] || a["x"]) {
+  if (a["enter"]) {
     fireHomingBurst();
     a["enter"] = false;
+  }
+  if (a["x"]) {
+    if (state.superReady) tryActivateSuperMode();
+    else fireHomingBurst();
     a["x"] = false;
   }
   }
@@ -1148,6 +1166,11 @@
     registerHomingHeat();
   }
 
+  function tryActivateSuperMode() {
+    if (!state.superReady || state.superModeActive || state.warpPhase !== "combat") return;
+    activateSuperMode();
+  }
+
   function fireTwinBeams() {
     // ロボの通常射撃: 従来のツインレーザーで最低限の火力を維持
     const baseVz = state.speed + 120;
@@ -1197,6 +1220,9 @@
   }
 
   function gatherVolleyTargets() {
+    if (state.superModeActive) {
+      return selectNearestAnchors(superSettings.autoLockMax);
+    }
     const validLocks = [];
     for (const lock of state.lockedTargets) {
       const enemy = lock.enemy || getEnemyById(lock.enemyId);
@@ -1272,6 +1298,19 @@
     if (state.warpPhase !== "combat") {
       state.lockedTargets = [];
       state.lockingAnchor = null;
+      return;
+    }
+    if (state.superModeActive) {
+      const autoLocks = selectNearestAnchors(Math.max(lockSettings.maxTargets, superSettings.autoLockMax));
+      state.lockedTargets = autoLocks.slice(0, lockSettings.maxTargets).map(target => ({
+        key: makeLockKey(target.enemy, target.anchorKey),
+        enemyId: target.enemy.id,
+        anchorKey: target.anchorKey,
+        enemy: target.enemy,
+        acquiredAt: Date.now()
+      }));
+      state.lockingAnchor = null;
+      state.lockPulse = (state.lockPulse + dt) % 10;
       return;
     }
     state.lockPulse = (state.lockPulse + dt) % 10;
@@ -1355,10 +1394,13 @@
   }
 
   function addPowerCharge(amount) {
-    if (state.superModeActive) return;
+    if (state.superModeActive || state.superReady) return;
     state.powerMeter = Math.min(powerSettings.maxPower, state.powerMeter + amount);
     if (state.powerMeter >= powerSettings.maxPower) {
-      activateSuperMode();
+      state.powerMeter = powerSettings.maxPower;
+      state.superReady = true;
+      showMessage("SUPER READY - PRESS X", 2.8);
+      pushComms("コア: 超誘導システム充填完了");
     }
   }
 
@@ -1366,8 +1408,25 @@
     // ロボの誘導レーザーが撃ち放題になる超過負荷状態
     state.superModeActive = true;
     state.superModeTimer = powerSettings.superDuration;
+    state.superFireTimer = 0;
+    state.superReady = false;
     state.powerMeter = powerSettings.maxPower;
+    state.homingOverheat = 0;
+    state.homingChainCount = 0;
+    state.homingChainTimer = 0;
+    state.superShotsRemaining = superSettings.autoShotLimit;
     showMessage("SUPER LOCKON - GUIDED BURST", 3.2);
+    pushComms("兵装: オーバードライブ、敵前方に全周ロック");
+  }
+
+  function endSuperMode() {
+    if (!state.superModeActive) return;
+    state.superModeActive = false;
+    state.superModeTimer = 0;
+    state.powerMeter = 0;
+    state.superFireTimer = 0;
+    state.superReady = false;
+    state.superShotsRemaining = 0;
   }
 
   function updatePowerState(dt) {
@@ -1380,8 +1439,33 @@
     if (state.superModeActive) {
       state.superModeTimer -= dt;
       if (state.superModeTimer <= 0) {
-        state.superModeActive = false;
-        state.powerMeter = 0;
+        endSuperMode();
+      }
+    }
+  }
+
+  function handleSuperFire(dt) {
+    if (!state.superModeActive) return;
+    const interval = Math.max(0.06, superSettings.autoFireInterval);
+    if (state.superShotsRemaining <= 0) {
+      endSuperMode();
+      return;
+    }
+    state.superFireTimer = (state.superFireTimer || 0) + dt;
+    while (state.superFireTimer >= interval) {
+      state.superFireTimer -= interval;
+      if (state.superShotsRemaining <= 0) {
+        endSuperMode();
+        break;
+      }
+      const shotBatch = Math.min(superSettings.autoLockMax, state.superShotsRemaining);
+      const targets = selectNearestAnchors(shotBatch).slice(0, shotBatch);
+      if (!targets.length) break;
+      fireHomingVolley(targets);
+      state.superShotsRemaining = Math.max(0, state.superShotsRemaining - targets.length);
+      if (state.superShotsRemaining <= 0) {
+        endSuperMode();
+        break;
       }
     }
   }
@@ -1966,18 +2050,22 @@
 
   function update(dt) {
   if (!state.running) return;
+  const playerDt = dt;
+  const worldScale = state.superModeActive ? superSettings.worldTimeScale : 1;
+  const worldDt = playerDt * worldScale;
   if (state.messageTimer > 0) {
-    state.messageTimer -= dt;
+    state.messageTimer -= playerDt;
     if (state.messageTimer <= 0) {
       message.textContent = "";
     }
   }
-  state.timeSinceStart += dt;
-  handleWarpPhase(dt);
-  updateFormationAnchors(dt);
+  state.timeSinceStart += worldDt;
+  handleWarpPhase(worldDt);
+  updateFormationAnchors(worldDt);
   handleSpawnTimer();
-  if (state.warpPhase === "combat") handleInput(dt);
-  else dampenDuringWarp(dt);
+  if (state.warpPhase === "combat") handleInput(playerDt);
+  else dampenDuringWarp(worldDt);
+  dt = worldDt;
       // 星を移動させて疑似的な速度感を演出
       for (const star of state.stars) {
         star.z -= dt * state.speed * 0.6;
@@ -1985,8 +2073,9 @@
       }
       handleChatter(dt);
       updateLockOn(dt);
-      updatePowerState(dt);
-      updateHomingHeat(dt);
+      updatePowerState(playerDt);
+      updateHomingHeat(playerDt);
+      handleSuperFire(playerDt);
 
       // プレイヤー姿勢で敵配置もゆっくり揺らし、追われる感覚を簡易再現
       for (const enemy of state.enemies) {
@@ -2350,7 +2439,9 @@
       const lockLine = `LOCK ${state.lockedTargets.length}/${lockSettings.maxTargets}`;
       const powerLine = state.superModeActive
         ? `POWER 100% / SUPER ${state.superModeTimer.toFixed(1)}s`
-        : `POWER ${Math.round(state.powerMeter)}%   COMBO x${Math.max(1, state.comboCount || 1)}`;
+        : state.superReady
+          ? "POWER MAX / PRESS X"
+          : `POWER ${Math.round(state.powerMeter)}%   COMBO x${Math.max(1, state.comboCount || 1)}`;
       const homingStatus = state.superModeActive
         ? "H-LASER INFINITE"
         : state.homingOverheat > 0
