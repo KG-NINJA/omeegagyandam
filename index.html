@@ -165,7 +165,10 @@
         superFlashIntensity: 0,
         superPsychicWaves: [],
         newtypeAuraParticles: [],
-        superHueShift: 0
+        superHueShift: 0,
+        // 起承転結の「転」を成立させるための乱入フラグ（旗艦戦でライバル機を出す）
+        rivalSpawned: false,
+        rivalDefeated: false
       };
       const settings = {
         starCount: 120,
@@ -229,28 +232,44 @@
         extraDelay: 0.35
       };
       const stageZones = [
-        { label: "初動", baseZ: 300, startDelay: 4, fighterWaves: 1, fightersPerWave: 6, waveInterval: 11 },
-        { label: "増援", baseZ: 255, startDelay: 8, fighterWaves: 1, fightersPerWave: 6, corvettes: 1, waveInterval: 14 },
-        { label: "中盤", baseZ: 220, startDelay: 12, fighterWaves: 1, fightersPerWave: 5, corvettes: 2, waveInterval: 16 },
+        // 起承転結の構成をデータで固定し、山場のメリハリを作る
         {
-          label: "決戦",
-          baseZ: 190,
-          startDelay: 18,
+          act: "起",
+          label: "宙域侵入",
+          baseZ: 300,
+          startDelay: 4,
           fighterWaves: 1,
           fightersPerWave: 6,
-          corvettes: 3,
-          battleships: true,
-          waveInterval: 18,
-          battleSpacing: 24
+          waveInterval: 11,
+          message: "起: 先遣隊を掃討せよ",
+          comms: [
+            "管制: 敵宙域へ侵入、迎撃が来るぞ",
+            "副砲塔: ロックオン優先、初手で数を減らせ"
+          ]
         },
-        // ステージ後半に艦隊一斉出撃を詰め込むゾーン
         {
-          label: "艦隊戦",
-          baseZ: 205,
-          startDelay: 22,
-          fighterWaves: 2,
+          act: "承",
+          label: "護衛艦隊",
+          baseZ: 245,
+          startDelay: 10,
+          fighterWaves: 1,
           fightersPerWave: 7,
-          corvettes: 4,
+          corvettes: 2,
+          waveInterval: 14,
+          message: "承: 護衛艦を突破せよ",
+          comms: [
+            "索敵: 護衛艦複数、隊列を組んで接近",
+            "管制: 無理に突っ込むな、ロックで崩せ"
+          ]
+        },
+        {
+          act: "転",
+          label: "反転奇襲",
+          baseZ: 210,
+          startDelay: 20,
+          fighterWaves: 2,
+          fightersPerWave: 8,
+          corvettes: 3,
           battleships: true,
           battleshipCount: 2,
           escortsPerShip: 2,
@@ -259,18 +278,28 @@
           fleetEscortOffsetZ: 4,
           waveInterval: 14,
           battleSpacing: 22,
-          message: "艦隊戦突入 - 護衛群を突破せよ"
+          message: "転: ジャミング発生、奇襲艦隊だ",
+          comms: [
+            "管制: 通信にノイズ…敵が反転してきた！",
+            "???: ……ここから先は通さない（未識別信号）"
+          ]
         },
         {
-          label: "旗艦",
+          act: "結",
+          label: "旗艦決戦",
           baseZ: 150,
-          startDelay: 26,
+          startDelay: 34,
           fighterWaves: 1,
-          fightersPerWave: 6,
+          fightersPerWave: 7,
           corvettes: 2,
           dreadnought: true,
           dreadnoughtEscorts: 4,
-          waveInterval: 14
+          waveInterval: 14,
+          message: "結: 旗艦コアを破壊せよ",
+          comms: [
+            "管制: 旗艦接近！三点ロックで装甲を剥がせ！",
+            "ロボ砲塔: ブリッジを落としてコアを露出させろ"
+          ]
         }
       ];
       let aiPanelTimer = null;
@@ -324,6 +353,7 @@
 
       function deriveStageCode() {
         if (state.warpPhase !== "combat") return "WP";
+        if (state.enemies.some(e => e.type === "rival" && !e.pendingExplosion && !e.retired)) return "RV";
         if (state.enemies.some(e => e.type === "dreadnought" && !e.pendingExplosion && !e.retired)) return "FG";
         if (state.enemies.some(e => e.type === "battleship" && !e.pendingExplosion && !e.retired)) return "BS";
         if (state.enemies.some(e => e.type === "corvette" && !e.pendingExplosion && !e.retired)) return "CV";
@@ -333,6 +363,7 @@
       function deriveEventCode() {
         if (!state.running && !state.debugMode) return 99;
         if (state.warpPhase !== "combat") return 20;
+        if (state.enemies.some(e => e.type === "rival" && !e.pendingExplosion && !e.retired)) return 90;
         if (state.enemies.some(e => e.type === "dreadnought" && !e.pendingExplosion && !e.retired)) return 80;
         if (state.enemies.some(e => e.type === "battleship" && !e.pendingExplosion && !e.retired)) return 70;
         if (state.shield <= 25 && !state.debugMode) return 40;
@@ -456,6 +487,9 @@
         state.running = true;
         state.formations = {};
         state.chainReactions = [];
+        // 起承転結の演出管理もステージ開始時にリセット
+        state.rivalSpawned = false;
+        state.rivalDefeated = false;
       }
 
       function primeAudio() {
@@ -784,6 +818,14 @@
           const zone = stageZones[state.zoneSpawnIndex];
           if (state.timeSinceStart < zone.startDelay) break;
           state.zoneSpawnIndex += 1;
+          // 章立て（起承転結）をHUDに反映して、今どこかを分かりやすくする
+          if (zone.act && zone.label) {
+            state.sectorLabel = `ACT ${zone.act} / ${zone.label}`;
+          }
+          // ゾーン開始時の通信ログ（盛り上げ担当）
+          if (zone.comms && Array.isArray(zone.comms)) {
+            zone.comms.forEach(line => pushComms(line));
+          }
           if (zone.message) {
             // ゾーン固有メッセージで艦隊戦などの山場を通知
             showMessage(zone.message, zone.messageDuration || 3.5);
@@ -945,9 +987,23 @@
         showMessage("FLAGSHIP DETECTED - DESTROY CORE", 4.5);
       }
 
+      function triggerRivalArrival(flagship) {
+        // 「転」要素: 有利になった瞬間にライバルが乱入してテンションを上げる
+        if (state.rivalSpawned || state.rivalDefeated) return;
+        state.rivalSpawned = true;
+        showMessage("RIVAL UNIT INBOUND", 3.6);
+        pushComms("???: ここからは俺が相手だ");
+        pushComms("管制: ライバル機反応！旗艦と同時に来るぞ！");
+        const spawnZ = Math.max(180, (flagship?.z ?? 200) + 70);
+        const rival = createRivalWeapon((Math.random() - 0.5) * 40, (Math.random() - 0.5) * 18, spawnZ);
+        rival.flash = 0.6;
+        state.enemies.push(rival);
+      }
+
       function createFighter(x, y, z) {
         return assignEnemyId({
           type: "fighter",
+          code: "FIGHTR",
           x: x ?? (Math.random() - 0.5) * 120,
           y: y ?? (Math.random() - 0.5) * 80,
           z: z ?? 320,
@@ -968,9 +1024,48 @@
         });
       }
 
+      function createRivalWeapon(x, y, z) {
+        // ライバルのロボット兵器（旗艦戦の盛り上げ役）。多段ヒットで手応えを出す。
+        return assignEnemyId({
+          type: "rival",
+          code: "RIVAL",
+          x: x ?? (Math.random() - 0.5) * 60,
+          y: y ?? (Math.random() - 0.5) * 36,
+          z: z ?? 230,
+          vx: 0,
+          vy: 0,
+          retreatSpeed: 20,
+          maxApproachRate: 32,
+          recedeFactor: 0.28,
+          flash: 0,
+          hp: 6,
+          maxHp: 6,
+          age: 0,
+          phase: Math.random() * Math.PI * 2,
+          fireTimer: 0,
+          fireDelay: 1.0,
+          // 回避AI: 無限回避は不公平なので、エネルギー制で「長く戦える」を作る
+          evadeEnergy: 100,
+          evadeEnergyMax: 100,
+          evadeRegen: 22, // 1秒あたり回復量
+          evadeCost: 26, // 1回の緊急回避コスト
+          evadeCooldown: 0,
+          phaseShift: 0, // 短時間だけ当たり判定をすり抜ける（演出+理不尽回避）
+          retired: false,
+          pendingExplosion: false,
+          pendingExplosionColor: "#ff4d4d",
+          pendingExplosionScore: 650,
+          pendingMegaExplosion: false,
+          megaExplosionHandler: null,
+          scoreAwarded: false,
+          explosionDelay: 0
+        });
+      }
+
       function createEscort(x, y, z) {
         return assignEnemyId({
           type: "corvette",
+          code: "CORVET",
           x,
           y,
           z,
@@ -2059,6 +2154,8 @@
             if (core && !core.destroyed && !isSegmentLocked(enemy, core) && !enemy.coreAnnounced) {
               enemy.coreAnnounced = true;
               showMessage("CORE EXPOSED - FINISH IT", 3.8);
+              // コア露出は「勝ち筋が見えた瞬間」なので、ここでライバル乱入を発火させる
+              triggerRivalArrival(enemy);
             }
             triggerNeighborChain(enemy, segment);
           }
@@ -2151,6 +2248,10 @@
       // 後方からは発射せず、規定時間ごとにレーザーを射出
       function attemptEnemyFire(enemy, dt) {
         if (enemy.retired || enemy.pendingExplosion) return;
+        if (enemy.type === "rival") {
+          attemptRivalFire(enemy, dt);
+          return;
+        }
         if (enemy.type === "dreadnought") {
           attemptDreadnoughtFire(enemy, dt);
           return;
@@ -2167,6 +2268,69 @@
           accel: 18,
           color: "#f64"
         });
+      }
+
+      function attemptRivalFire(enemy, dt) {
+        // ライバル機は命中圧を上げるため、低確率バーストで撃ってくる
+        enemy.fireTimer += dt;
+        const delay = enemy.fireDelay || 1.0;
+        if (enemy.fireTimer < delay) return;
+        enemy.fireTimer = 0;
+        if (!canEnemyShoot(enemy)) return;
+        if (!isEnemyVisible(enemy)) return;
+        if (Math.random() > 0.75) return;
+        const base = aimAtPlayer(enemy);
+        const spread = [-0.08, 0, 0.08];
+        for (let i = 0; i < spread.length; i++) {
+          const dir = {
+            x: base.x + spread[i],
+            y: base.y + (i === 1 ? 0 : -0.02),
+            z: base.z
+          };
+          const mag = Math.hypot(dir.x, dir.y, dir.z) || 0.0001;
+          dir.x /= mag; dir.y /= mag; dir.z /= mag;
+          spawnEnemyRocket({ x: enemy.x, y: enemy.y, z: enemy.z - 8 }, dir, {
+            speed: 10 + Math.random() * 4,
+            accel: 24,
+            maxSpeed: 40,
+            color: "#ff4d4d",
+            glow: "#ffd1d1"
+          });
+        }
+      }
+
+      function tryRivalEmergencyEvade(enemy, laser) {
+        // 被弾直前の緊急回避。ロックオンゲーなので「回避して粘る」をここで実現する。
+        if (!enemy || enemy.type !== "rival") return false;
+        if (enemy.pendingExplosion || enemy.retired) return false;
+        if ((enemy.phaseShift || 0) > 0) return true; // 既に位相ズレ中なら当たりを無効化
+        if ((enemy.evadeCooldown || 0) > 0) return false;
+        const energy = enemy.evadeEnergy ?? 0;
+        const cost = enemy.evadeCost ?? 30;
+        if (energy < cost) return false;
+
+        // 誘導レーザーは避けにくいが、ゼロではない（クライマックス用に薄く残す）
+        const baseChance = laser?.type === "homing" ? 0.35 : 0.72;
+        if (Math.random() > baseChance) return false;
+
+        enemy.evadeEnergy = Math.max(0, energy - cost);
+        enemy.evadeCooldown = 0.55;
+        enemy.phaseShift = 0.18;
+        enemy.flash = 0.55;
+
+        // 横っ飛び + 奥へ一気に下がって、同じレーンで削られ続けないようにする
+        const dir = (Math.random() < 0.5 ? -1 : 1);
+        const jukeX = dir * (18 + Math.random() * 22);
+        const jukeY = -dir * (8 + Math.random() * 14);
+        enemy.x += jukeX;
+        enemy.y += jukeY;
+        enemy.z = Math.min(380, (enemy.z ?? 180) + (18 + Math.random() * 26));
+        enemy.vx += dir * (10 + Math.random() * 8);
+        enemy.vy += -dir * (7 + Math.random() * 6);
+
+        spawnShockwaveRing(enemy.x, enemy.y, enemy.z, "#ff4d4d");
+        spawnExplosion(enemy.x, enemy.y, enemy.z, "#ffd1d1", 10);
+        return true;
       }
 
       function aimAtPlayer(enemy) {
@@ -2360,6 +2524,20 @@
             updateCarrierInterceptor(enemy, dt);
           } else if (enemy.type === "fighter") {
             updateFormationFighterFlight(enemy, dt, formationTarget);
+          } else if (enemy.type === "rival") {
+            // ライバルは蛇行しつつ急接近→急後退で撃ち合いを作る
+            const swayX = Math.sin(enemy.age * 2.2 + enemy.phase) * 18;
+            const swayY = Math.cos(enemy.age * 1.8 + enemy.phase) * 10;
+            enemy.vx = (swayX - enemy.x) * 0.9;
+            enemy.vy = (swayY - enemy.y) * 0.9;
+            // 見た目の「ロール」を付けてロボット兵器っぽく見せる
+            enemy.flightRoll = Math.sin(enemy.age * 3.1 + enemy.phase) * 55;
+            // 回避リソース管理（回避し続けて理不尽にならないようにする）
+            const emax = enemy.evadeEnergyMax ?? 100;
+            const regen = enemy.evadeRegen ?? 20;
+            enemy.evadeEnergy = Math.min(emax, (enemy.evadeEnergy ?? emax) + regen * dt);
+            enemy.evadeCooldown = Math.max(0, (enemy.evadeCooldown || 0) - dt);
+            enemy.phaseShift = Math.max(0, (enemy.phaseShift || 0) - dt);
           } else if (enemy.type === "corvette") {
             enemy.x += Math.sin(enemy.age * 1.8 + enemy.phase) * 6 * dt;
             enemy.y += Math.cos(enemy.age * 1.2 + enemy.phase) * 3 * dt;
@@ -2552,11 +2730,42 @@
               const dx = enemy.x - laser.x;
               const dy = enemy.y - laser.y;
               const dz = enemy.z - laser.z;
-              if (Math.abs(dz) < 12 && Math.hypot(dx, dy) < 6) {
-                enemy.flash = 0.2;
-                enemy.dead = true;
-                queueDelayedExplosion(enemy, { delay: 0.35, color: "#f0f", score: 100 });
-                registerPlayerKill(enemy);
+              const zTol = enemy.type === "rival" ? 14 : 12;
+              const rTol = enemy.type === "rival" ? 10 : 6;
+              if (Math.abs(dz) < zTol && Math.hypot(dx, dy) < rTol) {
+                // ライバルは「被弾寸前の回避」で粘り、クライマックスの一騎打ちを成立させる
+                if (enemy.type === "rival") {
+                  const evaded = tryRivalEmergencyEvade(enemy, laser);
+                  if (evaded) {
+                    laser.done = true;
+                    continue;
+                  }
+                }
+                // 小型機は即撃破、ライバル機のみ多段ヒット（盛り上げ優先）
+                if (enemy.type === "rival" && (enemy.hp ?? 1) > 1) {
+                  enemy.hp = Math.max(0, (enemy.hp ?? 1) - 1);
+                  enemy.flash = 0.35;
+                  state.score += 80;
+                  spawnExplosion(enemy.x, enemy.y, enemy.z, "#ffd1d1", 16);
+                  spawnShockwaveRing(enemy.x, enemy.y, enemy.z, "#ff4d4d");
+                  if (enemy.hp === 3) {
+                    showMessage("RIVAL ARMOR BREAK", 2.2);
+                    pushComms("???: いい機体だ…だが、まだだ！");
+                  }
+                } else {
+                  enemy.flash = 0.2;
+                  enemy.dead = true;
+                  if (enemy.type === "rival") {
+                    queueDelayedExplosion(enemy, { delay: 0.9, color: "#ff4d4d", score: 650 });
+                    registerPlayerKill(enemy, 12);
+                    state.rivalDefeated = true;
+                    pushComms("???: ……次は負けない");
+                    showMessage("RIVAL DOWN", 2.6);
+                  } else {
+                    queueDelayedExplosion(enemy, { delay: 0.35, color: "#f0f", score: 100 });
+                    registerPlayerKill(enemy);
+                  }
+                }
                 laser.done = true;
               }
             }
@@ -2619,6 +2828,8 @@
             drawBattleship(enemy);
           } else if (enemy.type === "corvette") {
             drawCorvette(enemy);
+          } else if (enemy.type === "rival") {
+            drawRivalWeapon(enemy);
           } else {
             drawFighter(enemy);
           }
@@ -2692,6 +2903,10 @@
               ? `LOCK ${locked}`
               : "CORE OPEN";
           hudLines.push(`FLAGSHIP ${destroyed}/${total}   ${status}`);
+        }
+        const rival = state.enemies.find(e => e.type === "rival" && !e.retired && !e.pendingExplosion);
+        if (rival) {
+          hudLines.push(`RIVAL HP ${Math.max(0, rival.hp ?? 0)}/${Math.max(1, rival.maxHp ?? 1)}`);
         }
         hudLines.push(state.sectorLabel);
         comms.textContent = state.navLog.slice(-5).join("\n");
@@ -2791,6 +3006,143 @@
           ctx.stroke();
           ctx.lineWidth = 1;
           drawWireCube({ x: enemy.x, y: enemy.y, z: enemy.z }, 5, color);
+        });
+      }
+
+      function drawRivalWeapon(enemy) {
+        // ライバル機は「人型ロボット兵器」にして、艦艇/戦闘機とシルエットで差別化する
+        const baseColor = enemy.flash > 0 ? "#fff" : "#ff4d4d";
+        withDepthRendering(enemy, baseColor, () => {
+          const rollDeg = enemy.flightRoll ?? 0;
+          const rollRad = rollDeg * (Math.PI / 180);
+          const cosR = Math.cos(rollRad);
+          const sinR = Math.sin(rollRad);
+          const rollPoint = (lx, ly, lz) => ({
+            x: enemy.x + lx * cosR - ly * sinR,
+            y: enemy.y + lx * sinR + ly * cosR,
+            z: enemy.z + lz
+          });
+
+          // === 人型スケルトン（超簡易ワイヤーフレーム） ===
+          const headW = rollPoint(0, -10, -6);
+          const neckW = rollPoint(0, -6, -2);
+          const chestW = rollPoint(0, -2, 2);
+          const pelvisW = rollPoint(0, 4, 6);
+          const shoulderLW = rollPoint(-9, -4, 0);
+          const shoulderRW = rollPoint(9, -4, 0);
+          const elbowLW = rollPoint(-14, 0, 4);
+          const elbowRW = rollPoint(14, 0, 4);
+          const handLW = rollPoint(-11, 4, 10);
+          const handRW = rollPoint(11, 4, 10);
+          const hipLW = rollPoint(-6, 6, 8);
+          const hipRW = rollPoint(6, 6, 8);
+          const kneeLW = rollPoint(-7, 12, 8);
+          const kneeRW = rollPoint(7, 12, 8);
+          const footLW = rollPoint(-7, 18, 10);
+          const footRW = rollPoint(7, 18, 10);
+          const packW = rollPoint(0, 0, 14);
+
+          const head = project(headW);
+          const neck = project(neckW);
+          const chest = project(chestW);
+          const pelvis = project(pelvisW);
+          const shoulderL = project(shoulderLW);
+          const shoulderR = project(shoulderRW);
+          const elbowL = project(elbowLW);
+          const elbowR = project(elbowRW);
+          const handL = project(handLW);
+          const handR = project(handRW);
+          const hipL = project(hipLW);
+          const hipR = project(hipRW);
+          const kneeL = project(kneeLW);
+          const kneeR = project(kneeRW);
+          const footL = project(footLW);
+          const footR = project(footRW);
+          const pack = project(packW);
+          ctx.save();
+          ctx.strokeStyle = baseColor;
+          ctx.shadowColor = "#ffd1d1";
+          ctx.shadowBlur = 14;
+          ctx.lineWidth = 1.6;
+
+          // 胴体
+          ctx.beginPath();
+          ctx.moveTo(head.x, head.y);
+          ctx.lineTo(neck.x, neck.y);
+          ctx.lineTo(chest.x, chest.y);
+          ctx.lineTo(pelvis.x, pelvis.y);
+          ctx.stroke();
+
+          // 腕
+          ctx.beginPath();
+          ctx.moveTo(shoulderL.x, shoulderL.y);
+          ctx.lineTo(elbowL.x, elbowL.y);
+          ctx.lineTo(handL.x, handL.y);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(shoulderR.x, shoulderR.y);
+          ctx.lineTo(elbowR.x, elbowR.y);
+          ctx.lineTo(handR.x, handR.y);
+          ctx.stroke();
+
+          // 肩～胸ライン
+          ctx.beginPath();
+          ctx.moveTo(shoulderL.x, shoulderL.y);
+          ctx.lineTo(chest.x, chest.y);
+          ctx.lineTo(shoulderR.x, shoulderR.y);
+          ctx.stroke();
+
+          // 脚
+          ctx.beginPath();
+          ctx.moveTo(hipL.x, hipL.y);
+          ctx.lineTo(kneeL.x, kneeL.y);
+          ctx.lineTo(footL.x, footL.y);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(hipR.x, hipR.y);
+          ctx.lineTo(kneeR.x, kneeR.y);
+          ctx.lineTo(footR.x, footR.y);
+          ctx.stroke();
+
+          // 腰ライン
+          ctx.beginPath();
+          ctx.moveTo(hipL.x, hipL.y);
+          ctx.lineTo(pelvis.x, pelvis.y);
+          ctx.lineTo(hipR.x, hipR.y);
+          ctx.stroke();
+
+          // バックパック（推進器）
+          ctx.beginPath();
+          ctx.moveTo(chest.x, chest.y);
+          ctx.lineTo(pack.x, pack.y);
+          ctx.stroke();
+
+          ctx.shadowBlur = 0;
+          // ロボっぽい塊感をキューブで少し足す（読みやすさ優先）
+          drawWireCube({ x: enemy.x, y: enemy.y - 2, z: enemy.z + 4 }, 7, baseColor); // 胴体
+          drawWireCube({ x: enemy.x, y: enemy.y - 10, z: enemy.z - 6 }, 4.2, baseColor); // 頭
+          // HPリング（HUD以外でも削り具合が分かるようにする）
+          const hp = Math.max(0, enemy.hp ?? 0);
+          const max = Math.max(1, enemy.maxHp ?? 1);
+          const pct = hp / max;
+          const center = project(enemy);
+          // 位相ズレ中はリングを青白くして「避けた」感を出す
+          const shifting = (enemy.phaseShift || 0) > 0;
+          ctx.strokeStyle = shifting ? "rgba(180,220,255,0.9)" : "rgba(255,255,255,0.7)";
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, 18, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * pct);
+          ctx.stroke();
+          // 回避エネルギー（薄い外周リング）: 長期戦の「今いける/避ける」を視覚化
+          const e = Math.max(0, enemy.evadeEnergy ?? 0);
+          const emax = Math.max(1, enemy.evadeEnergyMax ?? 1);
+          const epct = e / emax;
+          ctx.strokeStyle = "rgba(255, 200, 200, 0.55)";
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, 23, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * epct);
+          ctx.stroke();
+          ctx.restore();
         });
       }
 
