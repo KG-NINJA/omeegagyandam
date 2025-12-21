@@ -40,14 +40,20 @@
 
     #comms {
       position: absolute;
-      top: 12px;
-      left: 12px;
-      font-size: 12px;
-      line-height: 1.4;
-      max-width: 360px;
-      color: #8ff;
-      text-shadow: 0 0 6px #0bf;
+      left: 50%;
+      bottom: 74px;
+      transform: translateX(-50%);
+      font-size: 18px;
+      line-height: 1.35;
+      max-width: min(920px, calc(100vw - 48px));
+      color: #e9fbff;
+      text-shadow: 0 0 10px #0bf, 0 0 18px rgba(0, 170, 255, 0.55);
       white-space: pre-line;
+      text-align: center;
+      padding: 10px 14px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(120, 240, 255, 0.35);
+      border-radius: 10px;
     }
 
     #message {
@@ -3115,7 +3121,8 @@
           hudLines.push(`RIVAL HP ${Math.max(0, rival.hp ?? 0)}/${Math.max(1, rival.maxHp ?? 1)}`);
         }
         hudLines.push(state.sectorLabel);
-        comms.textContent = state.navLog.slice(-5).join("\n");
+        // セリフは読みやすいよう、画面下に大きめ字幕で直近のみ表示する
+        comms.textContent = state.navLog.slice(-2).join("\n");
         hud.textContent = hudLines.join("\n");
         updateAIPanelGuideVisibility();
 
