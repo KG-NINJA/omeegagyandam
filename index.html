@@ -145,6 +145,8 @@
         warpPhase: "entry",
         warpTimer: 0,
         warpIntensity: 0,
+        warpRingTimer: 0,
+        warpFlashIntensity: 0,
         sectorLabel: "GYANDAM FRAME / LOCKON FIELD",
         warpAnnounceDone: false,
         lockedTargets: [],
@@ -154,6 +156,7 @@
         superModeActive: false,
         superModeTimer: 0,
         superReady: false,
+        superHinted: false,
         superFireTimer: 0,
         superShotsRemaining: 0,
         lockPulse: 0,
@@ -199,8 +202,10 @@
         killBase: 6,
         comboBonus: 1,
         hitBase: 3,
-        maxPower: 160,
-        superDuration: 8
+        maxPower: 220,
+        superDuration: 8,
+        superComboMin: 4,
+        superMinIntensity: 0.25
       };
       const superSettings = {
         worldTimeScale: 0.32,
@@ -228,6 +233,25 @@
         behindThreshold: 18,
         fireChance: 0.12
       };
+      const enemyFireRamp = {
+        // ステージ序盤は緩く、終盤ほど攻撃密度を上げる
+        minDelayEasy: 6.2,
+        maxDelayEasy: 10.8,
+        minDelayHard: 2.6,
+        maxDelayHard: 5.4,
+        fireChanceEasy: 0.07,
+        fireChanceHard: 0.22,
+        blindConeEasy: 44,
+        blindConeHard: 72,
+        verticalConeEasy: 18,
+        verticalConeHard: 32,
+        behindThresholdEasy: 24,
+        behindThresholdHard: 12,
+        rocketSpeedEasy: 6.2,
+        rocketSpeedHard: 10.8,
+        rocketAccelEasy: 16,
+        rocketAccelHard: 28
+      };
       const explosionSettings = {
         extraDelay: 0.35
       };
@@ -237,7 +261,8 @@
           act: "起",
           label: "宙域侵入",
           baseZ: 300,
-          startDelay: 4,
+          startDelay: 8,
+          intensity: 0.05,
           fighterWaves: 1,
           fightersPerWave: 6,
           waveInterval: 11,
@@ -248,14 +273,30 @@
           ]
         },
         {
+          act: "起",
+          label: "先遣迎撃",
+          baseZ: 280,
+          startDelay: 16,
+          intensity: 0.18,
+          fighterWaves: 2,
+          fightersPerWave: 7,
+          waveInterval: 12,
+          message: "起: 迎撃編隊、数で押してくる",
+          comms: [
+            "索敵: 小型機増加、連続撃破で押し返せ",
+            "副砲塔: ロックを外すな、中央に集めろ"
+          ]
+        },
+        {
           act: "承",
           label: "護衛艦隊",
-          baseZ: 245,
-          startDelay: 10,
-          fighterWaves: 1,
-          fightersPerWave: 7,
+          baseZ: 250,
+          startDelay: 28,
+          intensity: 0.35,
+          fighterWaves: 2,
+          fightersPerWave: 8,
           corvettes: 2,
-          waveInterval: 14,
+          waveInterval: 13,
           message: "承: 護衛艦を突破せよ",
           comms: [
             "索敵: 護衛艦複数、隊列を組んで接近",
@@ -263,12 +304,36 @@
           ]
         },
         {
+          act: "承",
+          label: "砲撃回廊",
+          baseZ: 225,
+          startDelay: 44,
+          intensity: 0.52,
+          fighterWaves: 2,
+          fightersPerWave: 9,
+          corvettes: 3,
+          battleships: true,
+          battleshipCount: 1,
+          escortsPerShip: 2,
+          fleetEscortRing: 1,
+          fleetEscortRadius: 16,
+          fleetEscortOffsetZ: 4,
+          waveInterval: 12,
+          battleSpacing: 24,
+          message: "承: 砲撃回廊、回避しながら崩せ",
+          comms: [
+            "管制: 砲撃が濃い、速度を落とすな！",
+            "僚機: 直線に乗るな、ロールで抜けろ"
+          ]
+        },
+        {
           act: "転",
           label: "反転奇襲",
-          baseZ: 210,
-          startDelay: 20,
+          baseZ: 205,
+          startDelay: 60,
+          intensity: 0.7,
           fighterWaves: 2,
-          fightersPerWave: 8,
+          fightersPerWave: 10,
           corvettes: 3,
           battleships: true,
           battleshipCount: 2,
@@ -276,7 +341,7 @@
           fleetEscortRing: 2,
           fleetEscortRadius: 16,
           fleetEscortOffsetZ: 4,
-          waveInterval: 14,
+          waveInterval: 12,
           battleSpacing: 22,
           message: "転: ジャミング発生、奇襲艦隊だ",
           comms: [
@@ -288,9 +353,10 @@
           act: "結",
           label: "旗艦決戦",
           baseZ: 150,
-          startDelay: 34,
+          startDelay: 80,
+          intensity: 0.9,
           fighterWaves: 1,
-          fightersPerWave: 7,
+          fightersPerWave: 8,
           corvettes: 2,
           dreadnought: true,
           dreadnoughtEscorts: 4,
@@ -303,6 +369,60 @@
         }
       ];
       let aiPanelTimer = null;
+
+      function clamp01(value) {
+        return Math.max(0, Math.min(1, value));
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function getActiveZoneIndex() {
+        const raw = (state.zoneSpawnIndex || 0) - 1;
+        return Math.max(0, Math.min(stageZones.length - 1, raw));
+      }
+
+      function getStageIntensity() {
+        if (!stageZones.length) return 0;
+        if (state.warpPhase !== "combat") return 0;
+        const idx = getActiveZoneIndex();
+        const zone = stageZones[idx] || stageZones[0];
+        const base = Number.isFinite(zone.intensity) ? zone.intensity : idx / Math.max(1, stageZones.length - 1);
+        const nextZone = stageZones[Math.min(stageZones.length - 1, idx + 1)];
+        const nextBase = Number.isFinite(nextZone?.intensity)
+          ? nextZone.intensity
+          : Math.min(1, (idx + 1) / Math.max(1, stageZones.length - 1));
+        const rampWindow = zone.intensityRamp ?? 14;
+        const t = clamp01((state.timeSinceStart - (zone.startDelay || 0)) / Math.max(1, rampWindow));
+        return lerp(base, nextBase, t);
+      }
+
+      function getEnemyFireProfile() {
+        const t = clamp01(getStageIntensity());
+        return {
+          intensity: t,
+          minDelay: lerp(enemyFireRamp.minDelayEasy, enemyFireRamp.minDelayHard, t),
+          maxDelay: lerp(enemyFireRamp.maxDelayEasy, enemyFireRamp.maxDelayHard, t),
+          fireChance: lerp(enemyFireRamp.fireChanceEasy, enemyFireRamp.fireChanceHard, t),
+          blindCone: lerp(enemyFireRamp.blindConeEasy, enemyFireRamp.blindConeHard, t),
+          verticalCone: lerp(enemyFireRamp.verticalConeEasy, enemyFireRamp.verticalConeHard, t),
+          behindThreshold: lerp(enemyFireRamp.behindThresholdEasy, enemyFireRamp.behindThresholdHard, t),
+          rocketSpeed: lerp(enemyFireRamp.rocketSpeedEasy, enemyFireRamp.rocketSpeedHard, t),
+          rocketAccel: lerp(enemyFireRamp.rocketAccelEasy, enemyFireRamp.rocketAccelHard, t)
+        };
+      }
+
+      function getPowerPercent() {
+        if (!powerSettings.maxPower) return 0;
+        return Math.max(0, Math.min(100, Math.round((state.powerMeter / powerSettings.maxPower) * 100)));
+      }
+
+      function canReadySuper() {
+        const intensityOk = getStageIntensity() >= (powerSettings.superMinIntensity ?? 0);
+        const comboOk = (state.comboCount || 0) >= (powerSettings.superComboMin ?? 0);
+        return intensityOk && comboOk;
+      }
 
       // === Vision-AI用パネル描画・テレメトリ ===
       function renderAIPanel(snapshot) {
@@ -453,10 +573,13 @@
         state.warpPhase = "entry";
         state.warpTimer = 0;
         state.warpIntensity = 1.2;
+        state.warpRingTimer = 0;
+        state.warpFlashIntensity = 0;
         state.chatterTimer = 0;
         state.nextChatter = 5 + Math.random() * 3;
         state.navLog = [];
         state.warpAnnounceDone = false;
+        state.superHinted = false;
         pushComms("FRAME-R01起動、リンクスーツ同期完了");
         pushComms("ロボ砲塔: ロックオンして旗艦ブリッジを落とせ");
         setupStage();
@@ -490,6 +613,7 @@
         // 起承転結の演出管理もステージ開始時にリセット
         state.rivalSpawned = false;
         state.rivalDefeated = false;
+        state.superHinted = false;
       }
 
       function primeAudio() {
@@ -882,6 +1006,7 @@
         state.superModeTimer = 0;
         state.superReady = false;
         state.superFireTimer = 0;
+        state.superHinted = false;
         state.homingChainCount = 0;
         state.homingChainTimer = 0;
         state.homingOverheat = 0;
@@ -1001,6 +1126,7 @@
       }
 
       function createFighter(x, y, z) {
+        const profile = getEnemyFireProfile();
         return assignEnemyId({
           type: "fighter",
           code: "FIGHTR",
@@ -1012,8 +1138,8 @@
           retreatSpeed: settings.enemyRetreatBase + Math.random() * 6,
           maxApproachRate: settings.maxApproachRate + Math.random() * 2,
           flash: 0,
-          fireTimer: Math.random() * enemyFireSettings.maxDelay,
-          fireDelay: enemyFireSettings.minDelay + Math.random() * (enemyFireSettings.maxDelay - enemyFireSettings.minDelay),
+          fireTimer: Math.random() * profile.maxDelay,
+          fireDelay: profile.minDelay + Math.random() * (profile.maxDelay - profile.minDelay),
           retired: false,
           pendingExplosion: false,
           pendingExplosionColor: "#f0f",
@@ -1063,6 +1189,7 @@
       }
 
       function createEscort(x, y, z) {
+        const profile = getEnemyFireProfile();
         return assignEnemyId({
           type: "corvette",
           code: "CORVET",
@@ -1076,8 +1203,8 @@
           recedeFactor: settings.enemyRecedeFactor,
           phase: Math.random() * Math.PI * 2,
           flash: 0,
-          fireTimer: Math.random() * enemyFireSettings.maxDelay,
-          fireDelay: enemyFireSettings.minDelay + Math.random() * (enemyFireSettings.maxDelay - enemyFireSettings.minDelay),
+          fireTimer: Math.random() * profile.maxDelay,
+          fireDelay: profile.minDelay + Math.random() * (profile.maxDelay - profile.minDelay),
           retired: false,
           pendingExplosion: false,
           pendingExplosionColor: "#0f9",
@@ -1089,6 +1216,7 @@
       }
 
       function createBattleship(baseX, baseY, baseZ) {
+        const profile = getEnemyFireProfile();
         const segments = [];
         const segmentCount = 4;
         const spacing = 16;
@@ -1118,8 +1246,8 @@
           flash: 0,
           segments
           ,
-          fireTimer: Math.random() * enemyFireSettings.maxDelay,
-          fireDelay: enemyFireSettings.minDelay + Math.random() * (enemyFireSettings.maxDelay - enemyFireSettings.minDelay),
+          fireTimer: Math.random() * profile.maxDelay,
+          fireDelay: profile.minDelay + Math.random() * (profile.maxDelay - profile.minDelay),
           retired: false,
           pendingExplosion: false,
           pendingExplosionColor: "#fff",
@@ -1688,9 +1816,16 @@
         state.powerMeter = Math.min(powerSettings.maxPower, state.powerMeter + amount);
         if (state.powerMeter >= powerSettings.maxPower) {
           state.powerMeter = powerSettings.maxPower;
-          state.superReady = true;
-          showMessage("SUPER READY - PRESS X", 2.8);
-          pushComms("コア: 超誘導システム充填完了");
+          if (canReadySuper()) {
+            state.superReady = true;
+            state.superHinted = false;
+            showMessage("SUPER READY - PRESS X", 2.8);
+            pushComms("コア: 超誘導システム安定、覚醒準備完了");
+          } else if (!state.superHinted) {
+            state.superHinted = true;
+            showMessage(`POWER MAX - KEEP COMBO x${powerSettings.superComboMin}+`, 2.4);
+            pushComms("コア: 充填は最大…だが不安定、連続撃破で安定化せよ");
+          }
         }
       }
 
@@ -1736,6 +1871,13 @@
           if (state.superModeTimer <= 0) {
             endSuperMode();
           }
+          return;
+        }
+        if (!state.superReady && state.powerMeter >= powerSettings.maxPower && canReadySuper()) {
+          state.superReady = true;
+          state.superHinted = false;
+          showMessage("SUPER READY - PRESS X", 2.2);
+          pushComms("コア: 条件達成、覚醒可能");
         }
       }
 
@@ -2232,9 +2374,10 @@
 
       function withinForwardConePosition(position) {
         if (!position) return false;
-        if (position.z < enemyFireSettings.behindThreshold) return false;
-        if (Math.abs(position.x) > enemyFireSettings.blindCone) return false;
-        if (Math.abs(position.y) > enemyFireSettings.verticalCone) return false;
+        const profile = getEnemyFireProfile();
+        if (position.z < profile.behindThreshold) return false;
+        if (Math.abs(position.x) > profile.blindCone) return false;
+        if (Math.abs(position.y) > profile.verticalCone) return false;
         return true;
       }
 
@@ -2256,16 +2399,20 @@
           attemptDreadnoughtFire(enemy, dt);
           return;
         }
+        const profile = getEnemyFireProfile();
+        const intensity = profile.intensity || 0;
         enemy.fireTimer += dt;
-        if (enemy.fireTimer < enemy.fireDelay) return;
+        const baseDelay = enemy.fireDelay || profile.minDelay;
+        const effectiveDelay = Math.max(0.85, baseDelay * (1.15 - intensity * 0.4));
+        if (enemy.fireTimer < effectiveDelay) return;
         enemy.fireTimer = 0;
         if (!canEnemyShoot(enemy)) return;
         if (!isEnemyVisible(enemy)) return;
-        if (Math.random() > enemyFireSettings.fireChance) return;
+        if (Math.random() > profile.fireChance) return;
         const dir = aimAtPlayer(enemy);
         spawnEnemyRocket({ x: enemy.x, y: enemy.y, z: enemy.z - 6 }, dir, {
-          speed: 7 + Math.random() * 3,
-          accel: 18,
+          speed: profile.rocketSpeed + Math.random() * 2.4,
+          accel: profile.rocketAccel,
           color: "#f64"
         });
       }
@@ -2393,26 +2540,46 @@
       function handleWarpPhase(dt) {
         if (state.warpPhase === "combat") {
           state.warpIntensity += (0 - state.warpIntensity) * dt * 2.4;
+          state.warpFlashIntensity = Math.max(0, (state.warpFlashIntensity || 0) - dt * 1.6);
           return;
         }
         state.warpTimer += dt;
-        const entryEnd = 2.8;
-        const burnEnd = 5.4;
+        state.warpRingTimer = (state.warpRingTimer || 0) + dt;
+        state.warpFlashIntensity = Math.max(0, (state.warpFlashIntensity || 0) - dt * 0.9);
+        const entryEnd = 3.2;
+        const flareStart = 6.0;
+        const burnEnd = 7.4;
+        const ringInterval = Math.max(0.12, 0.26 - Math.min(0.14, state.warpIntensity * 0.06));
+        if (state.warpRingTimer >= ringInterval) {
+          state.warpRingTimer = 0;
+          const z = 70 + Math.random() * 70;
+          const color = state.warpTimer > flareStart ? "#f9f" : "#8ff";
+          spawnShockwaveRing((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 4, z, color);
+          state.warpFlashIntensity = Math.min(1, (state.warpFlashIntensity || 0) + 0.16);
+        }
         if (state.warpTimer < entryEnd) {
           state.speed += (settings.maxSpeed * 0.9 - state.speed) * dt * 1.3;
-          state.warpIntensity += (1.4 - state.warpIntensity) * dt * 2.2;
+          state.warpIntensity += (1.8 - state.warpIntensity) * dt * 2.2;
           state.yaw *= 0.99; // 自動安定
           state.pitch *= 0.99;
-        } else if (state.warpTimer < burnEnd) {
-          state.speed += (settings.maxSpeed * 1.2 - state.speed) * dt * 1.3;
-          state.warpIntensity += (1.8 - state.warpIntensity) * dt * 2.0;
+        } else if (state.warpTimer < flareStart) {
+          state.speed += (settings.maxSpeed * 1.15 - state.speed) * dt * 1.35;
+          state.warpIntensity += (2.4 - state.warpIntensity) * dt * 2.1;
           if (!state.warpAnnounceDone) {
             pushComms("管制: ワープ航路焼き付き、姿勢固定");
             state.warpAnnounceDone = true;
           }
+        } else if (state.warpTimer < burnEnd) {
+          state.speed += (settings.maxSpeed * 1.32 - state.speed) * dt * 1.45;
+          state.warpIntensity += (2.9 - state.warpIntensity) * dt * 2.1;
+          state.warpFlashIntensity = Math.min(1, (state.warpFlashIntensity || 0) + dt * 0.9);
+          if (Math.random() < 0.25) {
+            spawnExplosion((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 7, 85 + Math.random() * 60, "#bff", 6);
+          }
         } else {
           state.warpPhase = "combat";
-          state.warpIntensity = 0.5;
+          state.warpIntensity = 0.8;
+          state.warpFlashIntensity = 0.55;
           state.speed = Math.min(state.speed, settings.maxSpeed);
           pushComms("宙域突破、交戦開始");
           showMessage("OBERON SECTOR - STAGE START", 2.8);
@@ -2802,6 +2969,42 @@
         }
         ctx.stroke();
 
+        // ワープトンネルの追加演出（序盤の派手さを強調）
+        if (state.warpPhase !== "combat") {
+          const cx = canvas.width / 2;
+          const cy = canvas.height / 2;
+          const intensity = clamp01((state.warpIntensity || 0) / 2.9);
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.globalAlpha = 0.65;
+          const rays = 56;
+          const inner = 18 + intensity * 34;
+          const outer = Math.max(canvas.width, canvas.height) * (0.35 + intensity * 0.45);
+          for (let i = 0; i < rays; i++) {
+            const phase = (state.warpTimer || 0) * 0.65;
+            const angle = (Math.PI * 2 * i) / rays + phase;
+            const wobble = Math.sin(phase * 1.6 + i) * (2 + intensity * 5);
+            const aX = cx + Math.cos(angle) * inner;
+            const aY = cy + Math.sin(angle) * inner;
+            const bX = cx + Math.cos(angle) * (outer + wobble);
+            const bY = cy + Math.sin(angle) * (outer + wobble);
+            const col = i % 2 === 0 ? "#8ff" : "#f8f";
+            ctx.strokeStyle = col;
+            ctx.lineWidth = 1.2 + intensity * 1.4;
+            ctx.beginPath();
+            ctx.moveTo(aX, aY);
+            ctx.lineTo(bX, bY);
+            ctx.stroke();
+          }
+          const flash = clamp01((state.warpFlashIntensity || 0) * 0.4 + intensity * 0.08);
+          if (flash > 0) {
+            ctx.globalCompositeOperation = "source-over";
+            ctx.fillStyle = `rgba(160, 240, 255, ${flash})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+          ctx.restore();
+        }
+
         // レーザーを細線で表示
         for (const laser of state.lasers) {
           drawPlayerLaser(laser);
@@ -2880,11 +3083,14 @@
         if (state.debugMode) baseLine += "   DEBUG MODE";
         hudLines.push(baseLine);
         const lockLine = `LOCK ${state.lockedTargets.length}/${lockSettings.maxTargets}`;
+        const powerPercent = getPowerPercent();
         const powerLine = state.superModeActive
           ? `POWER 100% / SUPER ${state.superModeTimer.toFixed(1)}s`
           : state.superReady
-            ? "POWER MAX / PRESS X"
-            : `POWER ${Math.round(state.powerMeter)}%   COMBO x${Math.max(1, state.comboCount || 1)}`;
+            ? "POWER 100% / SUPER READY (X)"
+            : powerPercent >= 100
+              ? `POWER 100% (NEED COMBO x${powerSettings.superComboMin})   COMBO x${Math.max(1, state.comboCount || 1)}`
+              : `POWER ${powerPercent}%   COMBO x${Math.max(1, state.comboCount || 1)}`;
         const homingStatus = state.superModeActive
           ? "H-LASER INFINITE"
           : state.homingOverheat > 0
