@@ -65,6 +65,43 @@
       letter-spacing: 4px;
     }
 
+    #titleScreen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.4);
+      z-index: 2000;
+      pointer-events: none;
+    }
+
+    #titleLogo {
+      font-size: 64px;
+      font-weight: bold;
+      color: #0ff;
+      text-shadow: 0 0 20px #0ff;
+      margin-bottom: 40px;
+      letter-spacing: 8px;
+      text-align: center;
+      line-height: 1.2;
+    }
+
+    #pressStart {
+      font-size: 24px;
+      color: #fff;
+      animation: blink 1s infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
     #aiPanel {
       position: fixed;
       top: 8px;
@@ -106,6 +143,10 @@
     <div id="hud"></div>
     <div id="message"></div>
   </div>
+  <div id="titleScreen">
+    <div id="titleLogo">GYANDAM<br>LOCK-ON FRAME</div>
+    <div id="pressStart">PRESS ENTER OR CLICK TO START</div>
+  </div>
   <canvas id="aiPanel" width="150" height="100" aria-hidden="true"></canvas>
   <div id="aiPanelGuide" aria-hidden="true">VISION AI KEY: H = SHIELD / E = NEAREST ENEMY + DIST / S = PHASE CODE / EV =
     EVENT CODE</div>
@@ -123,6 +164,7 @@
         aiPanelCtx.imageSmoothingEnabled = false;
       }
       const state = {
+        gameState: 'TITLE',
         running: true,
         enemies: [],
         lasers: [],
@@ -270,12 +312,12 @@
           startDelay: 8,
           intensity: 0.05,
           fighterWaves: 1,
-          fightersPerWave: 6,
-          waveInterval: 11,
-          message: "起: 先遣隊を掃討せよ",
+          fightersPerWave: 8,
+          waveInterval: 10,
+          message: "起: 敵影確認、各個撃破せよ",
           comms: [
-            "管制: 敵宙域へ侵入、迎撃が来るぞ",
-            "副砲塔: ロックオン優先、初手で数を減らせ"
+            "管制: 敵宙域へ侵入、多数の熱源を探知",
+            "副砲塔: マルチロック、全機堕とすぞ！"
           ]
         },
         {
@@ -285,12 +327,12 @@
           startDelay: 16,
           intensity: 0.18,
           fighterWaves: 2,
-          fightersPerWave: 7,
-          waveInterval: 12,
-          message: "起: 迎撃編隊、数で押してくる",
+          fightersPerWave: 8,
+          waveInterval: 11,
+          message: "起: 迎撃編隊、増援あり",
           comms: [
-            "索敵: 小型機増加、連続撃破で押し返せ",
-            "副砲塔: ロックを外すな、中央に集めろ"
+            "索敵: 小型機増加、弾幕が厚くなるぞ",
+            "副砲塔: 中央に集めて一網打尽にしろ！"
           ]
         },
         {
@@ -301,12 +343,12 @@
           intensity: 0.35,
           fighterWaves: 2,
           fightersPerWave: 8,
-          corvettes: 2,
+          corvettes: 4,
           waveInterval: 13,
-          message: "承: 護衛艦を突破せよ",
+          message: "承: 護衛艦隊を突破せよ",
           comms: [
-            "索敵: 護衛艦複数、隊列を組んで接近",
-            "管制: 無理に突っ込むな、ロックで崩せ"
+            "索敵: 護衛艦多数、隊列を組んで来る！",
+            "管制: 側面からの砲撃に注意せよ"
           ]
         },
         {
@@ -339,19 +381,19 @@
           startDelay: 60,
           intensity: 0.7,
           fighterWaves: 2,
-          fightersPerWave: 10,
-          corvettes: 3,
+          fightersPerWave: 12,
+          corvettes: 4,
           battleships: true,
           battleshipCount: 2,
-          escortsPerShip: 2,
+          escortsPerShip: 3,
           fleetEscortRing: 2,
-          fleetEscortRadius: 16,
+          fleetEscortRadius: 18,
           fleetEscortOffsetZ: 4,
-          waveInterval: 12,
+          waveInterval: 11,
           battleSpacing: 22,
-          message: "転: ジャミング発生、奇襲艦隊だ",
+          message: "転: 強力なジャミング発生！",
           comms: [
-            "管制: 通信にノイズ…敵が反転してきた！",
+            "管制: レーダーにゴースト…敵の奇襲だ！",
             "???: ……ここから先は通さない（未識別信号）"
           ]
         },
@@ -534,14 +576,32 @@
         window.addEventListener("keydown", e => {
           primeAudio();
           state.inputs[e.key.toLowerCase()] = true;
+
+          if (state.gameState === 'TITLE') {
+            if (e.key === "Enter" || e.key === " ") {
+              startGame();
+            }
+            return;
+          }
+
           if (!state.running && e.key.toLowerCase() === "r") resetGame();
           if (e.key === "F1") toggleDebugMode();
         });
         window.addEventListener("keyup", e => state.inputs[e.key.toLowerCase()] = false);
-        window.addEventListener("pointerdown", primeAudio);
-        window.addEventListener("touchstart", primeAudio, { passive: true });
+
+        const handleStart = () => {
+          primeAudio();
+          if (state.gameState === 'TITLE') {
+            startGame();
+          }
+        };
+
+        window.addEventListener("pointerdown", handleStart);
+        window.addEventListener("touchstart", handleStart, { passive: true });
+
         createStars();
         resetGame();
+        state.gameState = 'TITLE';
         initAIPanelLoop();
         requestAnimationFrame(loop);
       }
@@ -586,9 +646,18 @@
         state.navLog = [];
         state.warpAnnounceDone = false;
         state.superHinted = false;
-        pushComms("FRAME-R01起動、リンクスーツ同期完了");
-        pushComms("ロボ砲塔: ロックオンして旗艦ブリッジを落とせ");
+        if (state.gameState === 'PLAYING') {
+          pushComms("FRAME-R01起動、リンクスーツ同期完了");
+          pushComms("ロボ砲塔: ロックオンして旗艦ブリッジを落とせ");
+        }
         setupStage();
+      }
+
+      function startGame() {
+        if (state.gameState === 'PLAYING') return;
+        state.gameState = 'PLAYING';
+        document.getElementById('titleScreen').style.display = 'none';
+        resetGame();
       }
 
       // 通信ログを追加し、最新数行を表示
@@ -1122,9 +1191,9 @@
         // 「転」要素: 有利になった瞬間にライバルが乱入してテンションを上げる
         if (state.rivalSpawned || state.rivalDefeated) return;
         state.rivalSpawned = true;
-        showMessage("RIVAL UNIT INBOUND", 3.6);
-        pushComms("???: ここからは俺が相手だ");
-        pushComms("管制: ライバル機反応！旗艦と同時に来るぞ！");
+        showMessage("WARNING: HIGH ENERGY DETECTED", 4.0);
+        pushComms("???: 貴様の相手は俺がする…！");
+        pushComms("管制: 高エネルギー反応接近！旗艦と連携してくるぞ！");
         const spawnZ = Math.max(180, (flagship?.z ?? 200) + 70);
         const rival = createRivalWeapon((Math.random() - 0.5) * 40, (Math.random() - 0.5) * 18, spawnZ);
         rival.flash = 0.6;
@@ -2631,8 +2700,18 @@
         handleWarpPhase(worldDt);
         updateFormationAnchors(worldDt);
         handleSpawnTimer();
-        if (state.warpPhase === "combat") handleInput(playerDt);
-        else dampenDuringWarp(worldDt);
+
+        if (state.gameState === 'TITLE') {
+          state.speed = 80;
+          state.roll = Math.sin(state.timeSinceStart * 0.5) * 15;
+          state.yaw = Math.sin(state.timeSinceStart * 0.3) * 0.5;
+          state.pitch = Math.cos(state.timeSinceStart * 0.4) * 0.5;
+        } else if (state.warpPhase === "combat") {
+          handleInput(playerDt);
+        } else {
+          dampenDuringWarp(worldDt);
+        }
+
         dt = worldDt;
         // 星を移動させて疑似的な速度感を演出
         for (const star of state.stars) {
@@ -3123,7 +3202,14 @@
         hudLines.push(state.sectorLabel);
         // セリフは読みやすいよう、画面下に大きめ字幕で直近のみ表示する
         comms.textContent = state.navLog.slice(-2).join("\n");
-        hud.textContent = hudLines.join("\n");
+        if (state.gameState === 'TITLE') {
+          hud.textContent = "";
+          comms.textContent = "";
+        } else {
+          hud.textContent = hudLines.join("\n");
+          comms.textContent = state.navLog.slice(-2).join("\n");
+        }
+
         updateAIPanelGuideVisibility();
 
         // ★ スーパーモード派手エフェクト描画 ★
